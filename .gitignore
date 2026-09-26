@@ -1,0 +1,17 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Data files (MS MARCO dataset and large index files)
+data/
+*.tsv
+*.bin
+*.idx
+*.lex
+
+# OS & Editor files
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
