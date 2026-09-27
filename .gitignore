@@ -4,6 +4,8 @@ Cargo.lock
 
 # Data files (MS MARCO dataset and large index files)
 data/
+# Local synthetic fixtures used while developing the indexer.
+data/fixtures/indexer/
 *.tsv
 *.bin
 *.idx
@@ -15,3 +17,5 @@ data/
 *.swo
 .vscode/
 .idea/
+
+notes/
