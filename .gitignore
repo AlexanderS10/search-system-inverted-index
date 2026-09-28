@@ -8,6 +8,7 @@ data/
 *.bin
 *.idx
 *.lex
+*.pdf
 
 # OS & Editor files
 .DS_Store
