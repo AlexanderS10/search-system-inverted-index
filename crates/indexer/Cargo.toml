@@ -7,3 +7,5 @@ edition = "2024"
 workspace = true
 
 [dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"

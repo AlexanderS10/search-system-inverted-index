@@ -19,3 +19,6 @@ data/fixtures/indexer/
 .idea/
 
 notes/
+
+# Local configuration
+.env
