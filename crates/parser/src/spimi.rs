@@ -2,10 +2,17 @@ use crate::tokenizer::tokenize;
 use common::{CollectionStats, Posting};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
 
 const POSTINGS_LIMIT: usize = 5000000;
 
+/// Read the file line by line and call out to parse, tokenize and record stats as well as byte offsets
+/// Arguments:
+///     input_path: the path to the main file to read which is collection.tsv in this case
+/// Behavior:
+///     It uses a read buffer so it does not ask the OS everytime for a buffer but I use the same one
+///     This buffer read the a line at the time and gives the size so we recod the offset for snippets
+///     It uses the POSTINGS_LIMIT to limit how many postings can be in memory before sorting them and writting them out.
+///     It clears all buffers and reuses them so they are faster than doing it one at the time.
 pub fn run_spimi(input_path: &str) -> std::io::Result<()> {
     //need to ensure the directories exist
     fs::create_dir_all("data/runs")?;
@@ -13,10 +20,15 @@ pub fn run_spimi(input_path: &str) -> std::io::Result<()> {
 
     //lets open it and create a buffer reader
     let input_file = File::open(input_path)?;
-    let reader = BufReader::new(input_file);
+    let mut reader = BufReader::new(input_file);
 
     //open the metadata document doc_table.tsv
     let doc_table_file = File::create("data/index/doc_table.tsv")?;
+
+    //I will add the offsets for snippets in a binary file
+    let offset_file = File::create("data/index/passage_offsets.bin")?;
+    let mut offset_writer = BufWriter::new(offset_file);
+
     let mut doc_table_writer = BufWriter::new(doc_table_file);
 
     let mut current_doc_id: u32 = 0;
@@ -25,9 +37,17 @@ pub fn run_spimi(input_path: &str) -> std::io::Result<()> {
     let mut postings: Vec<Posting> = Vec::with_capacity(POSTINGS_LIMIT);
 
     //read line by line now
-    for line_result in reader.lines() {
-        let line = line_result?;
-        let Some((external_id, passage_text)) = parse_line(&line) else {
+    let mut current_offset: u64 = 0;
+    let mut line_buffer = String::new();
+    loop {
+        let line_start_offset = current_offset;
+        line_buffer.clear();
+        let bytes_read = reader.read_line(&mut line_buffer)?;
+        if bytes_read == 0 {
+            break; //this is the end of the file
+        }
+        current_offset += bytes_read as u64;
+        let Some((external_id, passage_text)) = parse_line(&line_buffer) else {
             continue;
         };
 
@@ -38,6 +58,8 @@ pub fn run_spimi(input_path: &str) -> std::io::Result<()> {
             "{}\t{}\t{}",
             current_doc_id, external_id, tokenized.doc_len
         )?;
+
+        offset_writer.write_all(&line_start_offset.to_le_bytes())?;
 
         total_tokens += tokenized.doc_len as u64;
 
@@ -61,6 +83,7 @@ pub fn run_spimi(input_path: &str) -> std::io::Result<()> {
     if !postings.is_empty() {
         flush_run(run_number, &mut postings)?;
     }
+    offset_writer.flush()?;
     doc_table_writer.flush()?;
 
     //compute and write collection stats
