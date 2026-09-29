@@ -1,12 +1,11 @@
-mod tokenizer;
 mod spimi;
+mod tokenizer;
 use std::env;
 use std::time::Instant;
 
-
-fn main()->std::io::Result<()> {
+fn main() -> std::io::Result<()> {
     //For testing of files I am allowing for other relative paths why not
-    let args:Vec<String>=env::args().collect();
+    let args: Vec<String> = env::args().collect();
     let default_path = "data/raw/collection.tsv".to_string();
     let input_path = args.get(1).unwrap_or(&default_path);
 
@@ -18,6 +17,4 @@ fn main()->std::io::Result<()> {
     let elapsed_time = start_time.elapsed();
     println!("The total time taken is {:.2?}", elapsed_time);
     return Ok(());
-
 }
-
