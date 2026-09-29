@@ -27,6 +27,15 @@ pub(crate) const DIRECTORY_ENTRY_BYTES: u64 = 24;
 /// fixed part of a lexicon entry: u16 term_len + u32 doc_freq + u32 chunk_count + 2×u64 offsets.
 pub(crate) const LEXICON_ENTRY_FIXED_BYTES: u64 = 26;
 
+#[derive(Clone, Copy)]
+pub(crate) struct Chunk {
+    pub(crate) last_doc_id: u32,
+    pub(crate) offset: u64,
+    pub(crate) posting_count: u16,
+    pub(crate) id_bytes: u32,
+    pub(crate) frequency_bytes: u32,
+}
+
 // sample rate for in-RAM lexicon table
 // the nearest sampled term is used as starting point
 // for linear scan of the lexicon in-memory
@@ -54,6 +63,47 @@ pub(crate) trait WriteLe: Write {
 //blanket implementation... every Writer T gets WriteLe interface now
 // (e.g. BufWriter can call .write_u64_le
 impl<T: Write + ?Sized> WriteLe for T {}
+
+//same factory pattern as above
+#[allow(dead_code)]
+pub(crate) trait ReadLe {
+    fn slice(&self, offset: usize, len: usize) -> io::Result<&[u8]>;
+
+    fn read_u16_le(&self, offset: usize) -> io::Result<u16> {
+        Ok(u16::from_le_bytes(
+            self.slice(offset, 2)?.try_into().unwrap(),
+        ))
+    }
+
+    fn read_u32_le(&self, offset: usize) -> io::Result<u32> {
+        Ok(u32::from_le_bytes(
+            self.slice(offset, 4)?.try_into().unwrap(),
+        ))
+    }
+
+    fn read_u64_le(&self, offset: usize) -> io::Result<u64> {
+        Ok(u64::from_le_bytes(
+            self.slice(offset, 8)?.try_into().unwrap(),
+        ))
+    }
+}
+
+impl ReadLe for [u8] {
+    fn slice(&self, offset: usize, len: usize) -> io::Result<&[u8]> {
+        self.get(offset..offset.saturating_add(len))
+            .ok_or_else(|| invalid_err("truncated index"))
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn invalid<T>(message: &'static str) -> io::Result<T> {
+    Err(invalid_err(message))
+}
+
+#[allow(dead_code)]
+pub(crate) fn invalid_err(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
 
 // make it smol.
 // packed formate ==

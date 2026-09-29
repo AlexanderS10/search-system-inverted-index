@@ -5,7 +5,7 @@ use std::path::Path;
 use common::Posting;
 
 use crate::codec::{
-    CODEC_BITPACKED, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION, LEXICON_ENTRY_FIXED_BYTES,
+    CODEC_BITPACKED, Chunk, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION, LEXICON_ENTRY_FIXED_BYTES,
     LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_HEADER_BYTES, POSTINGS_MAGIC, SAMPLE_INTERVAL,
     WriteLe, pack_into,
 };
@@ -27,14 +27,6 @@ pub(crate) struct IndexWriter {
     // sparse lexicon index, every SAMPLE_INTERVAL terms
     samples: Vec<(String, u64)>,
     term_count: u32,
-}
-
-struct Chunk {
-    last_doc_id: u32,
-    offset: u64,
-    posting_count: u16,
-    id_bytes: u32,
-    frequency_bytes: u32,
 }
 
 // wires into codec to write for the index builder
