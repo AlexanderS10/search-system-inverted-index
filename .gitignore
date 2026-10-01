@@ -18,5 +18,7 @@ data/fixtures/indexer/
 *.swo
 .vscode/
 .idea/
-
+tests/
 notes/
+tests/
+log/
