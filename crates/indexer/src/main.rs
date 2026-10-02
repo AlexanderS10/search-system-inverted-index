@@ -16,7 +16,7 @@ use write::IndexWriter;
 struct Config {
     //where is the parser output, pulls all files with
     // shape "run_*.tsv" fr dir
-    #[arg(long, default_value = "data/fixtures/indexer")]
+    #[arg(long, default_value = "data/runs")]
     input_dir: PathBuf,
 
     //where are we writing the data to when index is built (.bin files)
