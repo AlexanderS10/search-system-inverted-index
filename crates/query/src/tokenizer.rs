@@ -3,8 +3,6 @@
 //! This will apply the same rules as the parser tokenizer to ensure the terms match with terms stored in the lexicon
 //!
 
-use std::collections::HashSet;
-
 fn is_delimeter(c: char) -> bool {
     return !c.is_alphanumeric();
 }
@@ -29,8 +27,6 @@ fn count_digits(word: &str) -> usize {
 ///     Vec<String> containing distinct lowercased valid terms
 pub fn tokenize_query(raw_query: &str) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
     //split on any chracter that is not alphanumeric
     for raw_token in raw_query.split(is_delimeter) {
         if raw_token.is_empty() {
@@ -42,9 +38,8 @@ pub fn tokenize_query(raw_query: &str) -> Vec<String> {
             continue;
         }
         let clean_term = raw_token.to_lowercase();
-
-        if !seen.contains(&clean_term) {
-            seen.insert(clean_term.clone());
+        //changed it ot check directly I mean rather than allocating a hashset for a small query is unnecessary overhead compared to a checking the array directly
+        if !terms.contains(&clean_term) {
             terms.push(clean_term);
         }
     }
