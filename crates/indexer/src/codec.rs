@@ -14,6 +14,8 @@ use std::io::{self, Write};
 //header defs
 pub(crate) const POSTINGS_MAGIC: [u8; 4] = *b"POST";
 pub(crate) const LEXICON_MAGIC: [u8; 4] = *b"LEXI";
+pub(crate) const POSTINGS_FILE: &str = "postings.bin";
+pub(crate) const LEXICON_FILE: &str = "lexicon.bin";
 pub(crate) const FORMAT_VERSION: u16 = 1;
 
 // codec id
@@ -109,14 +111,14 @@ pub(crate) fn invalid_err(message: &'static str) -> io::Error {
 // packed formate ==
 // 1 byte: bit width
 // N bytes: bit-packed values, low bits first
-pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32]) {
+pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32], capacity: usize) {
     // write it pack it clear it call again and reuse it
     let width = values
         .iter()
         .copied()
         .max()
         .map_or(0, |value| (u32::BITS - value.leading_zeros()) as usize);
-    let packed_len = 1 + (values.len() * width).div_ceil(8);
+    let packed_len = 1 + (capacity * width).div_ceil(8);
     output.clear();
     output.reserve(packed_len);
     output.push(width as u8);
@@ -139,5 +141,9 @@ pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32]) {
     // write lowest byte out and shift bucket down
     if bit_count > 0 {
         output.push(bits as u8);
+    }
+    //pad the packed bytes directly, leave the input buffers at their real count
+    if values.len() < capacity {
+        output.resize(packed_len, 0);
     }
 }
