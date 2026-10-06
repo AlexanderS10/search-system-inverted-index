@@ -1,3 +1,11 @@
+//!  merges sorted parser run files
+//!
+//! reads postings from run_*.tsv files and skips malformed or out-of-order rows
+//! uses a tournament tree to merge runs by term and doc id
+//! merges in bounded passes when the run count is larger than fan-in
+//!
+//! used by main.rs to send sorted postings to the index writer
+
 use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Lines, Write};
@@ -20,6 +28,7 @@ struct Run {
     head: Option<Posting>,
     // counter to help w/ stderr messages
     line_number: usize,
+    malformed_postings: usize,
 }
 
 impl Run {
@@ -31,6 +40,7 @@ impl Run {
             reader,
             head: None,
             line_number: 0,
+            malformed_postings: 0,
         };
         // read until first usable posting or EOF
         run.read_next(None)?;
@@ -51,6 +61,7 @@ impl Run {
             let line = line_result?;
             // validate tsv shape
             let Some(posting) = parse_posting(&line) else {
+                self.malformed_postings += 1;
                 self.report_skip("malformed posting");
                 continue;
             };
@@ -83,8 +94,9 @@ pub(crate) fn merge_passes(
     mut files: Vec<PathBuf>,
     fan_in: usize,
     build_dir: &Path,
-) -> io::Result<Vec<PathBuf>> {
+) -> io::Result<(Vec<PathBuf>, usize)> {
     let mut pass = 0;
+    let mut malformed_postings = 0;
     while files.len() > fan_in {
         // each pass merges bounded batches into temp run files
         let mut next_files = Vec::with_capacity(files.len().div_ceil(fan_in));
@@ -92,36 +104,41 @@ pub(crate) fn merge_passes(
             let output_path = build_dir.join(format!("merge_{pass:03}_{batch:06}.tsv"));
             let mut output = BufWriter::new(File::create(&output_path)?);
             // intermediate runs stay in parser tsv format
-            merge_files(paths, |posting| {
+            let (_, batch_malformed) = merge_files(paths, |posting| {
                 writeln!(
                     output,
                     "{}\t{}\t{}",
                     posting.term, posting.doc_id, posting.freq
                 )
             })?;
+            malformed_postings += batch_malformed;
             output.flush()?;
             next_files.push(output_path);
         }
         files = next_files;
         pass += 1;
     }
-    Ok(files)
+    Ok((files, malformed_postings))
 }
 
 // merge sorted run files and emit one clean sorted stream
 pub(crate) fn merge_files(
     files: &[PathBuf],
     mut emit: impl FnMut(Posting) -> io::Result<()>,
-) -> io::Result<()> {
+) -> io::Result<(usize, usize)> {
     // open runs and prime each head posting
-    let mut runs = files
-        .iter()
-        .cloned()
-        .map(Run::open)
-        .collect::<io::Result<Vec<_>>>()?;
+    let mut runs = Vec::with_capacity(files.len());
+    for (index, path) in files.iter().cloned().enumerate() {
+        runs.push(Run::open(path)?);
+        let processed = index + 1;
+        if processed % 10 == 0 || processed == files.len() {
+            println!("Processed {processed}/{} run files", files.len());
+        }
+    }
     let mut tree = TournamentTree::build(runs.len(), |index| head_key(&runs, index));
 
     // keep taking the smallest run head until all runs empty
+    let mut postings_processed = 0;
     while let Some(run_index) = tree.winner() {
         let posting = advance(&mut runs, run_index, &mut tree)?;
 
@@ -135,8 +152,12 @@ pub(crate) fn merge_files(
         }
 
         emit(posting)?;
+        postings_processed += 1;
     }
-    Ok(())
+    Ok((
+        postings_processed,
+        runs.iter().map(|run| run.malformed_postings).sum(),
+    ))
 }
 
 // take current head from one run, advance it, update tree

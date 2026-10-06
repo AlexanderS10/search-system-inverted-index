@@ -118,7 +118,7 @@ At startup, the reader loads only the sparse samples into a sorted shared array.
 - **Merge:** A tournament tree merges buffered, sorted `run_XXX.tsv` files by `(term, doc_id)`. Configurable fan-in permits additional passes when there are too many runs to open at once.
 - **Validate:** Reject malformed or unsorted input, invalid doc IDs or frequencies, and every duplicate `(term, doc_id)`. During reads, reject unknown versions/codecs, invalid offsets/counts, truncation, nonzero padding, and non-increasing real doc IDs. Validate decoded postings and `nextGEQ()` against small known lists; publish final files only after all validation succeeds.
 - **Encode:** Write ascending doc IDs in term-owned chunks with a configurable capacity, initially 64. Pad the final chunk with zero slots and record its real posting count. Bit-pack doc-ID gaps and frequencies in separate sections; gaps restart from zero in each chunk. Store neither positions nor impacts.
-- **Navigate:** Append a directory after each term's chunks. Its last-doc-ID and byte-offset entries let `nextGEQ()` skip earlier chunks without decoding them.
+- **Navigate:** Append a directory after each term's chunks. Its last-doc-ID and byte-offset entries let `nextGEQ()` skip earlier chunks without decoding them. Cursor navigation first gallops through directory entries to find a chunk whose last doc ID reaches the target, then binary-searches the narrowed range before decoding only the selected chunk.
 
 Padding makes every chunk use the same 64-value decoding path, but short lists can consume much more space. Measure bytes spent on singleton and other short lists before claiming a compression advantage.
 
@@ -163,7 +163,7 @@ The index access API reads only the two indexer files. Query logic supplies docu
 | Function | Output | Semantics |
 |---|---|---|
 | `openList(term)` | `Option<Cursor { doc_freq: u32 }>` | Bind an independent cursor to `term`; `None` means absent. |
-| `nextGEQ(target_doc_id)` | `Option<doc_id>` | `Some(id)` for the first real ID ≥ target; `None` exhausts the cursor. Uses directory-guided chunk decoding. |
+| `nextGEQ(target_doc_id)` | `Option<doc_id>` | `Some(id)` for the first real ID ≥ target; `None` exhausts the cursor. Uses galloping plus binary search over the term's directory, then decodes only the selected chunk. |
 | `getScore()` | `Result<u32, CursorStateError>` | Return current cursor-internal `tf`; no advance, BM25, or stored impact. Invalid before positioning or after exhaustion. |
 | `closeList()` | `()` | Release cursor state. |
 

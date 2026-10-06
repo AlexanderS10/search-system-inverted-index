@@ -22,3 +22,5 @@ tests/
 notes/
 tests/
 log/
+index/query_tester/
+collection.tar.gz
