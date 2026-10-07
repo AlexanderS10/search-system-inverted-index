@@ -1,9 +1,9 @@
-//! Public API for reading a built index.
+//!  public api for reading a built index
 //!
-//! The index writer and merge pipeline live in the `indexer` binary. Library
-//! consumers, like the query crate, only get the immutable reader interface.
+//! exposes the reader and cursor types for querying built index files
+//! index building and run merging are handled by the indexer binary
 //!
-//! Basic flow:
+//! basic flow:
 //!
 //! ```no_run
 //! # fn run() -> std::io::Result<()> {

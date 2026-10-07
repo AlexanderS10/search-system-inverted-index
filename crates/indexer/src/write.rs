@@ -1,3 +1,10 @@
+//!  writes the merged postings to the index files
+//!
+//! groups postings by term and encodes ids and frequencies in chunks
+//! writes chunk directories and lexicon entries with sparse samples
+//!
+//! used by main.rs to build postings.bin and lexicon.bin
+
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -7,7 +14,7 @@ use common::Posting;
 use crate::codec::{
     CODEC_BITPACKED, Chunk, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION, LEXICON_ENTRY_FIXED_BYTES,
     LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_HEADER_BYTES, POSTINGS_MAGIC, SAMPLE_INTERVAL,
-    WriteLe, pack_into,
+    WriteLe, invalid_err, pack_into,
 };
 
 pub(crate) struct IndexWriter {
@@ -85,12 +92,11 @@ impl IndexWriter {
     }
 
     fn write_chunk(&mut self) -> io::Result<()> {
-        if self.doc_ids.is_empty() {
+        let Some(&last_doc_id) = self.doc_ids.last() else {
             return Ok(());
-        }
+        };
 
         let posting_count = self.doc_ids.len() as u16;
-        let last_doc_id = *self.doc_ids.last().expect("nonempty chunk");
         // delta encode doc ids before bit-packing
         let mut previous = 0;
         for doc_id in &mut self.doc_ids {
@@ -98,15 +104,16 @@ impl IndexWriter {
             *doc_id -= previous;
             previous = current;
         }
-        self.doc_ids.resize(self.chunk_capacity, 0);
-        self.frequencies.resize(self.chunk_capacity, 0);
-
         // write packed doc deltas, then packed frequencies
         let offset = self.postings_position;
-        pack_into(&mut self.pack_scratch, &self.doc_ids);
+        pack_into(&mut self.pack_scratch, &self.doc_ids, self.chunk_capacity);
         self.postings.write_all(&self.pack_scratch)?;
         let id_bytes = self.pack_scratch.len() as u32;
-        pack_into(&mut self.pack_scratch, &self.frequencies);
+        pack_into(
+            &mut self.pack_scratch,
+            &self.frequencies,
+            self.chunk_capacity,
+        );
         self.postings.write_all(&self.pack_scratch)?;
         let frequency_bytes = self.pack_scratch.len() as u32;
         self.postings_position += u64::from(id_bytes) + u64::from(frequency_bytes);
@@ -133,7 +140,9 @@ impl IndexWriter {
 
         // chunk directory lives after the term's packed chunks
         let directory_offset = self.postings_position;
+        let mut document_frequency = 0;
         for chunk in &self.chunks {
+            document_frequency += u32::from(chunk.posting_count);
             self.postings.write_u32_le(chunk.last_doc_id)?;
             self.postings.write_u64_le(chunk.offset)?;
             self.postings.write_u16_le(chunk.posting_count)?;
@@ -145,15 +154,6 @@ impl IndexWriter {
         self.postings_position += DIRECTORY_ENTRY_BYTES * self.chunks.len() as u64;
 
         let entry_offset = self.lexicon_position;
-        // sample every nth term so reader can jump into lexicon
-        if self.term_count.is_multiple_of(SAMPLE_INTERVAL) {
-            self.samples.push((term.clone(), entry_offset));
-        }
-        let document_frequency = self
-            .chunks
-            .iter()
-            .map(|chunk| u32::from(chunk.posting_count))
-            .sum();
         write_term(&mut self.lexicon, &term)?;
         self.lexicon.write_u32_le(document_frequency)?;
         self.lexicon.write_u32_le(self.chunks.len() as u32)?;
@@ -161,6 +161,10 @@ impl IndexWriter {
         self.lexicon.write_u64_le(directory_offset)?;
         self.lexicon_position += LEXICON_ENTRY_FIXED_BYTES + term.len() as u64;
 
+        // sample every nth term so reader can jump into lexicon
+        if self.term_count.is_multiple_of(SAMPLE_INTERVAL) {
+            self.samples.push((term, entry_offset));
+        }
         self.term_count += 1;
         self.chunks.clear();
         Ok(())
@@ -193,11 +197,7 @@ impl IndexWriter {
 }
 
 fn write_term(writer: &mut impl WriteLe, term: &str) -> io::Result<()> {
-    let term_len = u16::try_from(term.len()).map_err(|_| invalid_data("term is too long"))?;
+    let term_len = u16::try_from(term.len()).map_err(|_| invalid_err("term is too long"))?;
     writer.write_u16_le(term_len)?;
     writer.write_all(term.as_bytes())
-}
-
-fn invalid_data(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
 }
