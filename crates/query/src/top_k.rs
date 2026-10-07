@@ -64,6 +64,7 @@ impl TopKHeap {
     }
 
     ///Returns the lowest score currently in the heap
+    #[allow(dead_code)]
     pub fn min_score(&self) -> f64 {
         if self.heap.len() < self.k {
             return 0.0;

@@ -76,6 +76,7 @@ impl DocTable {
 
     ///If the document table is empty
     #[inline]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         return self.entries.is_empty();
     }
