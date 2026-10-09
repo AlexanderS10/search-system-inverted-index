@@ -10,7 +10,7 @@ pub struct TokenizedDoc {
 
 ///Helper: returns true if the character is  not alphanumeric
 fn is_delimiter(c: char) -> bool {
-    return !c.is_alphanumeric();
+    return !c.is_ascii_alphanumeric();
 }
 
 ///Helper: counts how many digits are in a word
