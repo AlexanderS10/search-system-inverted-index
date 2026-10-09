@@ -7,3 +7,9 @@ edition = "2024"
 workspace = true
 
 [dependencies]
+common = { path = "../common" }
+indexer = { path = "../indexer" }
+memmap2 = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tiny_http = "0.12"

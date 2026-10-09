@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MS MARCO Search Engine</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --card-bg: #ffffff;
+      --card-border: #e4e4e7;
+      --card-border-hover: #a1a1aa;
+      --input-bg: #ffffff;
+      --text: #09090b;
+      --text-muted: #71717a;
+      --text-dim: #a1a1aa;
+      --highlight-bg: #e4e4e7;
+      --highlight-text: #09090b;
+      --badge-bg: #f4f4f5;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2.5rem 1.75rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1380px;
+    }
+
+    @media (min-width: 1600px) {
+      .container {
+        max-width: 1520px;
+      }
+    }
+
+    /* Vertical centering transition */
+    .search-section {
+      width: 100%;
+      padding-top: 22vh;
+      transition: padding-top 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    body.searched .search-section {
+      padding-top: 0;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+      transition: margin-bottom 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    body.searched header {
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.35rem;
+      color: var(--text);
+      transition: font-size 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    body.searched h1 {
+      font-size: 1.75rem;
+    }
+
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 0.925rem;
+      font-weight: 400;
+    }
+
+    .search-box {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 0.85rem 1.15rem;
+      font-size: 0.975rem;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
+      background: var(--input-bg);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--text);
+      box-shadow: 0 0 0 1px var(--text);
+    }
+
+    button.btn-search {
+      padding: 0.85rem 1.75rem;
+      background-color: var(--text);
+      color: #ffffff;
+      font-size: 0.95rem;
+      font-weight: 500;
+      border: 1px solid var(--text);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+
+    button.btn-search:hover {
+      opacity: 0.85;
+    }
+
+    .controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .mode-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .mode-btn {
+      padding: 0.35rem 0.8rem;
+      border-radius: 5px;
+      border: 1px solid var(--card-border);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.825rem;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .mode-btn:hover {
+      color: var(--text);
+      border-color: var(--card-border-hover);
+    }
+
+    .mode-btn.active {
+      background: var(--text);
+      color: #ffffff;
+      border-color: var(--text);
+      font-weight: 500;
+    }
+
+    .results-area {
+      width: 100%;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.35s ease 0.1s, transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) 0.1s;
+    }
+
+    body.searched .results-area {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .status-bar {
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.825rem;
+      color: var(--text-muted);
+      padding: 0 0.25rem;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .results-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.875rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      transition: border-color 0.15s ease;
+    }
+
+    .card:hover {
+      border-color: var(--card-border-hover);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.65rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .passage-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .meta-badges {
+      display: flex;
+      gap: 0.45rem;
+      font-size: 0.75rem;
+    }
+
+    .badge {
+      background: var(--badge-bg);
+      border: 1px solid var(--card-border);
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .badge.score {
+      color: var(--text);
+      border-color: #d4d4d8;
+      font-weight: 500;
+    }
+
+    .snippet-text {
+      color: #3f3f46;
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    mark {
+      background-color: var(--highlight-bg);
+      color: var(--highlight-text);
+      font-weight: 600;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    .spinner {
+      border: 2px solid var(--card-border);
+      border-top-color: var(--text);
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 0.7s linear infinite;
+      margin: 2.5rem auto;
+      display: none;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 1.5rem 1rem;
+      }
+      .search-section {
+        padding-top: 10vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="search-section">
+      <header>
+        <h1>MS MARCO Search</h1>
+        <p class="subtitle">Document-At-A-Time (DAAT) Query Processor with BM25 Ranking</p>
+      </header>
+
+      <div class="search-box">
+        <div class="input-row">
+          <input type="text" id="queryInput" placeholder="Enter search terms (e.g. machine learning algorithm)..." autofocus>
+          <button class="btn-search" id="searchBtn">Search</button>
+        </div>
+
+        <div class="controls-row">
+          <div class="mode-group">
+            <span>Mode:</span>
+            <button type="button" class="mode-btn active" id="btnAnd">AND (Conjunctive)</button>
+            <button type="button" class="mode-btn" id="btnOr">OR (Disjunctive)</button>
+          </div>
+          <div>
+            <span>Top 10 Results</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="results-area">
+      <div class="status-bar" id="statusBar" style="display: none;">
+        <span id="statusInfo"></span>
+        <span id="latencyInfo"></span>
+      </div>
+
+      <div class="spinner" id="spinner"></div>
+
+      <div class="results-list" id="resultsList"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentMode = "and";
+
+    const queryInput = document.getElementById("queryInput");
+    const searchBtn = document.getElementById("searchBtn");
+    const btnAnd = document.getElementById("btnAnd");
+    const btnOr = document.getElementById("btnOr");
+    const statusBar = document.getElementById("statusBar");
+    const statusInfo = document.getElementById("statusInfo");
+    const latencyInfo = document.getElementById("latencyInfo");
+    const resultsList = document.getElementById("resultsList");
+    const spinner = document.getElementById("spinner");
+
+    btnAnd.addEventListener("click", () => {
+      currentMode = "and";
+      btnAnd.classList.add("active");
+      btnOr.classList.remove("active");
+    });
+
+    btnOr.addEventListener("click", () => {
+      currentMode = "or";
+      btnOr.classList.add("active");
+      btnAnd.classList.remove("active");
+    });
+
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        performSearch();
+      }
+    });
+
+    searchBtn.addEventListener("click", performSearch);
+
+    function highlightSnippet(text, terms) {
+      if (!text || !terms || terms.length === 0) return text;
+      // Escape regex special chars in query terms
+      const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const regex = new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi');
+      return text.replace(regex, '<mark>$1</mark>');
+    }
+
+    async function performSearch() {
+      const q = queryInput.value.trim();
+      if (!q) return;
+
+      // Smoothly move search section to the top
+      document.body.classList.add("searched");
+
+      resultsList.innerHTML = "";
+      statusBar.style.display = "none";
+      spinner.style.display = "block";
+
+      try {
+        const url = `/api/search?q=${encodeURIComponent(q)}&mode=${currentMode}&k=10`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        spinner.style.display = "none";
+        statusBar.style.display = "flex";
+
+        const termDisplay = data.terms && data.terms.length > 0 ? `for "${data.terms.join(' ')}"` : `for "${q}"`;
+        statusInfo.textContent = `${data.results.length} matches ${termDisplay} (${data.mode.toUpperCase()})`;
+        latencyInfo.textContent = `${data.latency_ms.toFixed(2)} ms`;
+
+        if (data.results.length === 0) {
+          resultsList.innerHTML = `
+            <div class="empty-state">
+              <p>No matching passages found in the collection.</p>
+            </div>
+          `;
+          return;
+        }
+
+        data.results.forEach((item) => {
+          const card = document.createElement("div");
+          card.className = "card";
+
+          const snippetHtml = item.snippet
+            ? highlightSnippet(item.snippet, data.terms)
+            : "<em>(Snippet unavailable)</em>";
+
+          card.innerHTML = `
+            <div class="card-header">
+              <span class="passage-title">#${item.rank} Passage ID: ${item.external_id}</span>
+              <div class="meta-badges">
+                <span class="badge score">Score: ${item.score.toFixed(4)}</span>
+                <span class="badge">Doc ID: ${item.doc_id}</span>
+                <span class="badge">${item.doc_len} tokens</span>
+              </div>
+            </div>
+            <div class="snippet-text">${snippetHtml}</div>
+          `;
+
+          resultsList.appendChild(card);
+        });
+      } catch (err) {
+        spinner.style.display = "none";
+        resultsList.innerHTML = `
+          <div class="empty-state">
+            <p style="color: #dc2626;">Error executing search: ${err.message}</p>
+          </div>
+        `;
+      }
+    }
+  </script>
+</body>
+</html>
