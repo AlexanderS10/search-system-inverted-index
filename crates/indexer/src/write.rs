@@ -12,9 +12,9 @@ use std::path::Path;
 use common::Posting;
 
 use crate::codec::{
-    CODEC_BITPACKED, Chunk, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION, LEXICON_ENTRY_FIXED_BYTES,
-    LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_HEADER_BYTES, POSTINGS_MAGIC, SAMPLE_INTERVAL,
-    WriteLe, invalid_err, pack_into,
+    invalid_err, pack_into, Chunk, WriteLe, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION,
+    LEXICON_ENTRY_FIXED_BYTES, LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_HEADER_BYTES,
+    POSTINGS_MAGIC, SAMPLE_INTERVAL,
 };
 
 pub(crate) struct IndexWriter {
@@ -31,6 +31,8 @@ pub(crate) struct IndexWriter {
     pack_scratch: Vec<u8>,
     // chunk metadata for current term
     chunks: Vec<Chunk>,
+    prev_last_doc_id: u32,
+    first_chunk_offset: Option<u64>,
     // sparse lexicon index, every SAMPLE_INTERVAL terms
     samples: Vec<(String, u64)>,
     term_count: u32,
@@ -69,6 +71,8 @@ impl IndexWriter {
             frequencies: Vec::with_capacity(capacity),
             pack_scratch: Vec::new(),
             chunks: Vec::new(),
+            prev_last_doc_id: 0,
+            first_chunk_offset: None,
             samples: Vec::new(),
             term_count: 0,
         })
@@ -97,34 +101,50 @@ impl IndexWriter {
         };
 
         let posting_count = self.doc_ids.len() as u16;
-        // delta encode doc ids before bit-packing
-        let mut previous = 0;
+        // encode doc ids relative to the previous posting, including across chunks
+        let mut previous = self.prev_last_doc_id;
         for doc_id in &mut self.doc_ids {
             let current = *doc_id;
-            *doc_id -= previous;
+            *doc_id = current
+                .checked_sub(previous)
+                .ok_or_else(|| invalid_err("document IDs are not sorted"))?;
             previous = current;
         }
-        // write packed doc deltas, then packed frequencies
-        let offset = self.postings_position;
-        pack_into(&mut self.pack_scratch, &self.doc_ids, self.chunk_capacity);
+        let first_chunk_offset = *self
+            .first_chunk_offset
+            .get_or_insert(self.postings_position);
+        let relative_offset = self
+            .postings_position
+            .checked_sub(first_chunk_offset)
+            .ok_or_else(|| invalid_err("invalid chunk offset"))?;
+        let offset = u32::try_from(relative_offset)
+            .map_err(|_| invalid_err("term chunk data exceeds 4 GiB"))?;
+
+        let id_width = pack_into(&mut self.pack_scratch, &self.doc_ids);
         self.postings.write_all(&self.pack_scratch)?;
-        let id_bytes = self.pack_scratch.len() as u32;
-        pack_into(
-            &mut self.pack_scratch,
-            &self.frequencies,
-            self.chunk_capacity,
-        );
+        let frequencies = self
+            .frequencies
+            .iter()
+            .map(|frequency| {
+                frequency
+                    .checked_sub(1)
+                    .ok_or_else(|| invalid_err("term frequency must be greater than zero"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let frequency_width = pack_into(&mut self.pack_scratch, &frequencies);
         self.postings.write_all(&self.pack_scratch)?;
-        let frequency_bytes = self.pack_scratch.len() as u32;
-        self.postings_position += u64::from(id_bytes) + u64::from(frequency_bytes);
+        self.postings_position += (1 + (self.doc_ids.len() * usize::from(id_width)).div_ceil(8))
+            as u64
+            + (1 + (self.doc_ids.len() * usize::from(frequency_width)).div_ceil(8)) as u64;
 
         self.chunks.push(Chunk {
             last_doc_id,
             offset,
             posting_count,
-            id_bytes,
-            frequency_bytes,
+            id_width,
+            frequency_width,
         });
+        self.prev_last_doc_id = last_doc_id;
         self.doc_ids.clear();
         self.frequencies.clear();
         Ok(())
@@ -136,7 +156,9 @@ impl IndexWriter {
         };
         self.write_chunk()?;
 
-        let first_chunk_offset = self.chunks[0].offset;
+        let first_chunk_offset = self
+            .first_chunk_offset
+            .ok_or_else(|| invalid_err("term has no first chunk"))?;
 
         // chunk directory lives after the term's packed chunks
         let directory_offset = self.postings_position;
@@ -144,12 +166,10 @@ impl IndexWriter {
         for chunk in &self.chunks {
             document_frequency += u32::from(chunk.posting_count);
             self.postings.write_u32_le(chunk.last_doc_id)?;
-            self.postings.write_u64_le(chunk.offset)?;
+            self.postings.write_u32_le(chunk.offset)?;
             self.postings.write_u16_le(chunk.posting_count)?;
-            self.postings.write_u8(CODEC_BITPACKED)?;
-            self.postings.write_u8(0)?;
-            self.postings.write_u32_le(chunk.id_bytes)?;
-            self.postings.write_u32_le(chunk.frequency_bytes)?;
+            self.postings.write_u8(chunk.id_width)?;
+            self.postings.write_u8(chunk.frequency_width)?;
         }
         self.postings_position += DIRECTORY_ENTRY_BYTES * self.chunks.len() as u64;
 
@@ -167,6 +187,8 @@ impl IndexWriter {
         }
         self.term_count += 1;
         self.chunks.clear();
+        self.prev_last_doc_id = 0;
+        self.first_chunk_offset = None;
         Ok(())
     }
 

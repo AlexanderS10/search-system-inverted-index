@@ -16,9 +16,9 @@ use std::sync::Arc; // allows multi-threaded reading
 use memmap2::Mmap;
 
 use crate::codec::{
-    Chunk, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION, LEXICON_ENTRY_FIXED_BYTES, LEXICON_FILE,
-    LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_FILE, POSTINGS_HEADER_BYTES, POSTINGS_MAGIC,
-    ReadLe, invalid,
+    invalid, invalid_err, Chunk, ReadLe, DIRECTORY_ENTRY_BYTES, FORMAT_VERSION,
+    LEXICON_ENTRY_FIXED_BYTES, LEXICON_FILE, LEXICON_HEADER_BYTES, LEXICON_MAGIC, POSTINGS_FILE,
+    POSTINGS_HEADER_BYTES, POSTINGS_MAGIC,
 }; // invalid creates invalid data error
 
 // lexicon entry bytes after term_len + term: doc_freq..directory_offset.
@@ -49,8 +49,10 @@ pub struct Cursor {
     inner: Arc<Inner>,             //= shared access .bin
     doc_freq: u32,                 // comes from term's lex entry
     chunk_count: usize,            // comes from term's lex entry
+    first_chunk_offset: u64,       // absolute offset of the term's first chunk
     directory_offset: u64,         // points to term's chunk dir in postings.bin
     frequency_range: Range<usize>, //where this chunk's packed freqs live
+    frequency_width: u8,           // width recorded for the current chunk
     next_chunk_index: usize,       // where to start the next directory search
     ids: Vec<u32>,                 //decoded vals for that chunk
     freqs: Vec<u32>,               // same as ids
@@ -128,8 +130,10 @@ impl IndexReader {
                         inner: Arc::clone(&self.inner),
                         doc_freq: fixed.read_u32_le(0)?,
                         chunk_count,
+                        first_chunk_offset: fixed.read_u64_le(8)?,
                         directory_offset: fixed.read_u64_le(16)?,
                         frequency_range: 0..0,
+                        frequency_width: 0,
                         next_chunk_index: 0,
                         ids: Vec::with_capacity(self.inner.chunk_capacity),
                         freqs: Vec::with_capacity(self.inner.chunk_capacity),
@@ -165,7 +169,7 @@ impl Cursor {
             return Ok(None);
         };
         //decode chosen chunks ids
-        self.load_ids(entry)?;
+        self.load_ids(chunk_index, entry)?;
         let doc_id = self.seek_loaded(target_doc_id);
         //skip this chunk once positioned; retry it if no position was found
         self.next_chunk_index = chunk_index + usize::from(doc_id.is_some());
@@ -186,11 +190,14 @@ impl Cursor {
             decode_section(
                 &mut self.freqs,
                 src,
-                self.inner.chunk_capacity,
                 self.ids.len(),
+                self.inner.chunk_capacity,
+                Some(self.frequency_width),
             )?;
         }
-        Ok(self.freqs[pos])
+        self.freqs[pos]
+            .checked_add(1)
+            .ok_or_else(|| invalid_err("decoded term frequency overflow"))
     }
 
     // consuming the cursor drops its buffers and releases its shared index reference.
@@ -229,24 +236,46 @@ impl Cursor {
         Ok(candidate)
     }
     //decodes one chunks ids
-    fn load_ids(&mut self, entry: Chunk) -> io::Result<()> {
-        let src = self
-            .inner
-            .postings
-            .slice(entry.offset as usize, entry.id_bytes as usize)?;
+    fn load_ids(&mut self, chunk_index: usize, entry: Chunk) -> io::Result<()> {
+        let chunk_offset = self
+            .first_chunk_offset
+            .checked_add(u64::from(entry.offset))
+            .ok_or_else(|| invalid_err("chunk offset overflow"))?;
+        let id_bytes = section_bytes(entry.id_width, entry.posting_count)?;
+        let frequency_bytes = section_bytes(entry.frequency_width, entry.posting_count)?;
+        let src = self.inner.postings.slice(
+            usize::try_from(chunk_offset).map_err(|_| invalid_err("chunk offset too large"))?,
+            id_bytes,
+        )?;
         decode_section(
             &mut self.ids,
             src,
-            self.inner.chunk_capacity,
             entry.posting_count.into(),
+            self.inner.chunk_capacity,
+            Some(entry.id_width),
         )?;
-        let mut doc_id = 0;
+        let base = if chunk_index == 0 {
+            0
+        } else {
+            self.directory_entry(chunk_index - 1)?.last_doc_id
+        };
+        let mut doc_id = base;
         for id in &mut self.ids {
-            doc_id += *id;
+            doc_id = doc_id
+                .checked_add(*id)
+                .ok_or_else(|| invalid_err("decoded document ID overflow"))?;
             *id = doc_id;
         }
-        let start = (entry.offset + u64::from(entry.id_bytes)) as usize;
-        self.frequency_range = start..start + entry.frequency_bytes as usize;
+        let frequency_start = chunk_offset
+            .checked_add(id_bytes as u64)
+            .ok_or_else(|| invalid_err("frequency offset overflow"))?;
+        let frequency_start = usize::try_from(frequency_start)
+            .map_err(|_| invalid_err("frequency offset too large"))?;
+        let frequency_end = frequency_start
+            .checked_add(frequency_bytes)
+            .ok_or_else(|| invalid_err("frequency range overflow"))?;
+        self.frequency_range = frequency_start..frequency_end;
+        self.frequency_width = entry.frequency_width;
         self.freqs.clear();
         self.pos = None;
         Ok(())
@@ -260,10 +289,10 @@ impl Cursor {
             .slice(offset, DIRECTORY_ENTRY_BYTES as usize)?;
         Ok(Chunk {
             last_doc_id: entry.read_u32_le(0)?,
-            offset: entry.read_u64_le(4)?,
-            posting_count: entry.read_u16_le(12)?,
-            id_bytes: entry.read_u32_le(16)?,
-            frequency_bytes: entry.read_u32_le(20)?,
+            offset: entry.read_u32_le(4)?,
+            posting_count: entry.read_u16_le(8)?,
+            id_width: entry.read_u8(10)?,
+            frequency_width: entry.read_u8(11)?,
         })
     }
 }
@@ -280,14 +309,21 @@ fn map_file(path: &Path) -> io::Result<Mmap> {
 
 // validates header, returns the chunk size
 fn check_header(bytes: &[u8], magic: [u8; 4], header_bytes: u64) -> io::Result<u16> {
+    if bytes.slice(0, 4)? != magic {
+        return invalid("bad index magic");
+    }
+    if bytes.read_u16_le(4)? != FORMAT_VERSION {
+        return invalid("unsupported index format version");
+    }
+    if bytes.read_u16_le(6)? != header_bytes as u16 {
+        return invalid("bad index header size");
+    }
+    if bytes.read_u16_le(10)? != 0 {
+        return invalid("bad index header reserved field");
+    }
     let capacity = bytes.read_u16_le(8)?;
-    if bytes.slice(0, 4)? != magic
-        || bytes.read_u16_le(4)? != FORMAT_VERSION
-        || bytes.read_u16_le(6)? != header_bytes as u16
-        || bytes.read_u16_le(10)? != 0
-        || capacity == 0
-    {
-        return invalid("bad header");
+    if capacity == 0 {
+        return invalid("bad index chunk capacity");
     }
     Ok(capacity)
 }
@@ -310,23 +346,23 @@ fn read_samples(bytes: &[u8], offset: u64, count: u32) -> io::Result<Vec<(String
 //resize to real count, leave the padded slots packed
 //bit level decoder.
 // unpacks one width-bit value per dst slot, reading packed bits least-significant first
-fn decode_section(dst: &mut Vec<u32>, src: &[u8], capacity: usize, count: usize) -> io::Result<()> {
+fn decode_section(
+    dst: &mut Vec<u32>,
+    src: &[u8],
+    count: usize,
+    capacity: usize,
+    expected_width: Option<u8>,
+) -> io::Result<()> {
     // first byte gives the bit width; a missing width byte is an error
     let Some((&width, data)) = src.split_first() else {
         return invalid("empty packed section");
     };
     let width = usize::from(width);
-    if width > 32 || count == 0 || count > capacity || data.len() != (capacity * width).div_ceil(8)
-    {
-        return invalid("bad packed section");
+    if expected_width.is_some_and(|expected| usize::from(expected) != width) {
+        return invalid("chunk section width mismatch");
     }
-
-    //check padding as bytes instead of unpacking values we'll throw away
-    let real_bits = count * width;
-    if let Some((&first, rest)) = data[real_bits / 8..].split_first()
-        && (first >> (real_bits % 8) != 0 || rest.iter().any(|&byte| byte != 0))
-    {
-        return invalid("nonzero packed padding");
+    if width > 32 || count == 0 || count > capacity || data.len() != (count * width).div_ceil(8) {
+        return invalid("bad packed section");
     }
 
     //validate before touching dst so a failed decode can be retried
@@ -349,4 +385,11 @@ fn decode_section(dst: &mut Vec<u32>, src: &[u8], capacity: usize, count: usize)
         bit_count -= width;
     }
     Ok(())
+}
+
+fn section_bytes(width: u8, count: u16) -> io::Result<usize> {
+    if width > 32 || count == 0 {
+        return invalid("bad chunk section metadata");
+    }
+    Ok(1 + (usize::from(width) * usize::from(count)).div_ceil(8))
 }

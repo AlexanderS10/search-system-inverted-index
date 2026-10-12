@@ -107,7 +107,7 @@ flowchart LR
 
 | Phase | RAM bound | Disk access |
 |---|---|---|
-| Build | One buffer and tree row per active run, plus one chunk and bounded output/directory buffers | Stream runs and output; spill large directories temporarily. |
+| Build | One buffer and tree row per active run, plus one term's chunk and directory buffers | Stream runs and output; directory metadata is bounded by the current term. |
 | Reader startup | One sample per 64 lexicon terms, shared by all cursors | Read only the sample table. |
 | Each open cursor | Term metadata, position, and at most one decoded 64-posting chunk—up to 512 bytes for two `u32` arrays, plus cursor overhead | Read one lexicon group on open; read directory entries and posting chunks as seeks require. |
 
@@ -116,29 +116,29 @@ At startup, the reader loads only the sparse samples into a sorted shared array.
 ### Inverted Index
 
 - **Merge:** A tournament tree merges buffered, sorted `run_XXX.tsv` files by `(term, doc_id)`. Configurable fan-in permits additional passes when there are too many runs to open at once.
-- **Validate:** Reject malformed or unsorted input, invalid doc IDs or frequencies, and every duplicate `(term, doc_id)`. During reads, reject unknown versions/codecs, invalid offsets/counts, truncation, nonzero padding, and non-increasing real doc IDs. Validate decoded postings and `nextGEQ()` against small known lists; publish final files only after all validation succeeds.
-- **Encode:** Write ascending doc IDs in term-owned chunks with a configurable capacity, initially 64. Pad the final chunk with zero slots and record its real posting count. Bit-pack doc-ID gaps and frequencies in separate sections; gaps restart from zero in each chunk. Store neither positions nor impacts.
+- **Validate:** Reject malformed or unsorted input, invalid frequencies, and every duplicate `(term, doc_id)`. During reads, reject unknown versions, invalid offsets/counts, truncation, and bad section widths. Validate decoded postings and `nextGEQ()` against small known lists; publish final files only after all validation succeeds.
+- **Encode:** Write ascending doc IDs in term-owned chunks with a configurable capacity, initially 64. Pack exactly the real posting count. The first gap in a chunk is relative to the previous chunk's final doc ID; later gaps are relative to the previous posting. Frequencies store `freq - 1`, so all-one-frequency chunks use width 0. Store neither positions nor impacts.
 - **Navigate:** Append a directory after each term's chunks. Its last-doc-ID and byte-offset entries let `nextGEQ()` skip earlier chunks without decoding them. Cursor navigation first gallops through directory entries to find a chunk whose last doc ID reaches the target, then binary-searches the narrowed range before decoding only the selected chunk.
 
-Padding makes every chunk use the same 64-value decoding path, but short lists can consume much more space. Measure bytes spent on singleton and other short lists before claiming a compression advantage.
+Short lists still carry a directory entry, but their sections contain only their real postings. Measure bytes spent on singleton and other short lists before claiming a compression advantage.
 
 #### `postings.bin` contract
 
-All multibyte fields are little-endian. The fixed 12-byte header is included in absolute file offsets: `magic:[u8;4]` (`POST`), `version:u16` (`1`), `header_bytes:u16` (`12`), `chunk_capacity:u16` (initially `64`), `reserved:u16` (`0`).
+All multibyte fields are little-endian. The fixed 12-byte header is included in absolute file offsets: `magic:[u8;4]` (`POST`), `version:u16` (`2`), `header_bytes:u16` (`12`), `chunk_capacity:u16` (initially `64`), `reserved:u16` (`0`).
 
-For each term, the byte order is `[chunk 0 ID section][chunk 0 frequency section] ... [chunk directory]`. Every section starts with a `u8` bit width; values are packed least-significant bit first, with unused final-byte bits set to zero. Width zero represents an all-zero section. Padded slots are not postings. The default capacity is 64; rebuilt indexes may record another capacity.
+For each term, the byte order is `[chunk 0 ID section][chunk 0 frequency section] ... [chunk directory]`. Every section starts with a `u8` bit width; values are packed least-significant bit first, with unused final-byte bits set to zero. Width zero represents an all-zero section. Sections contain exactly the real posting count. The default capacity is 64; rebuilt indexes may record another capacity.
 
-Each directory entry is 24 bytes:
+Each directory entry is 12 bytes:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `last_doc_id` | `u32` | Last real doc ID in this chunk; increases across the term's chunks. |
-| `chunk_offset` | `u64` | Absolute offset of the chunk's ID section in `postings.bin`. |
+| `chunk_offset` | `u32` | Offset relative to the term's `first_chunk_offset`. |
 | `posting_count` | `u16` | Real postings in this chunk, from 1 through the recorded capacity. |
-| `codec`, `reserved` | `u8`, `u8` | Codec 1 is a bit-packed chunk; codec 0 is reserved; reserved is zero. |
-| `id_bytes`, `freq_bytes` | `u32`, `u32` | Encoded section lengths, including their width bytes. |
+| `id_width` | `u8` | Bit width of the packed ID gaps. |
+| `frequency_width` | `u8` | Bit width of packed `freq - 1` values. |
 
-The frequency section starts at `chunk_offset + id_bytes`; the chunk ends at `chunk_offset + id_bytes + freq_bytes`. All offsets include the file header.
+The frequency section starts after the ID section. Section lengths are derived from the width and posting count. The reader adds the term's absolute `first_chunk_offset` to each relative directory offset.
 
 ### Term Lexicon
 
@@ -154,7 +154,7 @@ The frequency section starts at `chunk_offset + id_bytes`; the chunk ends at `ch
 
 `lexicon.bin` stores terms in the parser's defined order and samples the first term and byte offset of every 64-entry group. Each sample entry is `sample_term_byte_len:u16`, `sample_term_utf8:bytes`, `group_offset:u64`.
 
-Its fixed 32-byte header is included in absolute file offsets: `magic:[u8;4]` (`LEXI`), `version:u16` (`1`), `header_bytes:u16` (`32`), `chunk_capacity:u16` (initially `64`), `reserved:u16` (`0`), `sample_interval:u32` (`64`), `sample_table_offset:u64`, `sample_count:u32`, `term_count:u32`.
+Its fixed 32-byte header is included in absolute file offsets: `magic:[u8;4]` (`LEXI`), `version:u16` (`2`), `header_bytes:u16` (`32`), `chunk_capacity:u16` (initially `64`), `reserved:u16` (`0`), `sample_interval:u32` (`64`), `sample_table_offset:u64`, `sample_count:u32`, `term_count:u32`.
 
 ### Output API
 
@@ -162,10 +162,12 @@ The index access API reads only the two indexer files. Query logic supplies docu
 
 | Function | Output | Semantics |
 |---|---|---|
-| `openList(term)` | `Option<Cursor { doc_freq: u32 }>` | Bind an independent cursor to `term`; `None` means absent. |
-| `nextGEQ(target_doc_id)` | `Option<doc_id>` | `Some(id)` for the first real ID ≥ target; `None` exhausts the cursor. Uses galloping plus binary search over the term's directory, then decodes only the selected chunk. |
-| `getScore()` | `Result<u32, CursorStateError>` | Return current cursor-internal `tf`; no advance, BM25, or stored impact. Invalid before positioning or after exhaustion. |
-| `closeList()` | `()` | Release cursor state. |
+| `IndexReader::open(index_dir)` | `io::Result<IndexReader>` | Open and memory-map `postings.bin` and `lexicon.bin`; validate magic, version, headers, and chunk capacity. |
+| `IndexReader::open_list(term)` | `io::Result<Option<Cursor>>` | Bind an independent cursor to `term`; `Ok(None)` means absent. |
+| `Cursor::doc_freq()` | `u32` | Return the term's document frequency. |
+| `Cursor::next_geq(target_doc_id)` | `io::Result<Option<u32>>` | Return the first real doc ID ≥ target; `Ok(None)` exhausts the cursor. Uses directory search and decodes only the selected chunk. |
+| `Cursor::get_score()` | `io::Result<u32>` | Return the current posting's term frequency without advancing. Invalid before positioning or after exhaustion. |
+| `Cursor::close_list()` | `()` | Consume the cursor; dropping it has the same cleanup effect. |
 
 
 ### Concurrency
@@ -177,4 +179,46 @@ Operations on one cursor are serialized. Two workers must not call `nextGEQ()` o
 ---
 
 ## 3. Query Processor (Executable 3)
-*(TInverted Index API, DAAT AND/OR query traversal, BM25 ranking, and CLI)*
+*(Inverted Index API, DAAT AND/OR query traversal, BM25 ranking, CLI, and web UI)*
+
+The query process loads the collection stats and document table, memory-maps
+the postings and lexicon, then opens optional passage offsets and corpus text
+for snippets. Its reported query latency covers tokenized search and ranking,
+but not result enrichment or snippet extraction. The REPL and web API share the
+same `SearchEngine`.
+
+### User interfaces
+
+Run the CLI with:
+
+```bash
+target/release/query
+```
+
+Enter `AND terms` or `OR terms`; use `exit` to stop.
+
+Run the web UI with:
+
+```bash
+target/release/query --web 8080
+```
+
+Open `http://127.0.0.1:8080`. The JSON endpoint is:
+
+```bash
+curl --get 'http://127.0.0.1:8080/api/search' \
+  --data-urlencode 'q=machine learning' \
+  --data 'mode=or' --data 'k=10'
+```
+
+## 4. Benchmark
+
+`crates/bench` is a separate, standard-library-only black-box runner. It starts
+the existing query REPL, waits for the flushed `search > ` prompt, sends AND or
+OR queries, and parses the printed results. It reports engine latency,
+end-to-end round-trip latency, MRR@10, empty-result rate, and query-child RSS.
+
+Run each mode separately with a file-cache purge before each mode when cold
+AND and OR comparisons are required. Optional snippet generation is disabled
+for benchmark runs by temporarily moving `data/index/passage_offsets.bin`;
+see `quickstart.md` and `crates/bench/README.md`.
