@@ -20,7 +20,9 @@ data/fixtures/indexer/
 .idea/
 tests/
 notes/
+todo.txt
 tests/
 log/
+bench_out/
 index/query_tester/
 collection.tar.gz

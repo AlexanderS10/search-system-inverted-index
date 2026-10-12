@@ -5,6 +5,7 @@ members = [
     "crates/parser",
     "crates/indexer",
     "crates/query",
+    "crates/bench",
 ]
 
 [workspace.dependencies]

@@ -16,15 +16,12 @@ pub(crate) const POSTINGS_MAGIC: [u8; 4] = *b"POST";
 pub(crate) const LEXICON_MAGIC: [u8; 4] = *b"LEXI";
 pub(crate) const POSTINGS_FILE: &str = "postings.bin";
 pub(crate) const LEXICON_FILE: &str = "lexicon.bin";
-pub(crate) const FORMAT_VERSION: u16 = 1;
-
-// codec id
-pub(crate) const CODEC_BITPACKED: u8 = 1;
+pub(crate) const FORMAT_VERSION: u16 = 2;
 
 //size consts
 pub(crate) const POSTINGS_HEADER_BYTES: u64 = 12;
 pub(crate) const LEXICON_HEADER_BYTES: u64 = 32;
-pub(crate) const DIRECTORY_ENTRY_BYTES: u64 = 24;
+pub(crate) const DIRECTORY_ENTRY_BYTES: u64 = 12;
 
 /// fixed part of a lexicon entry: u16 term_len + u32 doc_freq + u32 chunk_count + 2×u64 offsets.
 pub(crate) const LEXICON_ENTRY_FIXED_BYTES: u64 = 26;
@@ -32,10 +29,10 @@ pub(crate) const LEXICON_ENTRY_FIXED_BYTES: u64 = 26;
 #[derive(Clone, Copy)]
 pub(crate) struct Chunk {
     pub(crate) last_doc_id: u32,
-    pub(crate) offset: u64,
+    pub(crate) offset: u32,
     pub(crate) posting_count: u16,
-    pub(crate) id_bytes: u32,
-    pub(crate) frequency_bytes: u32,
+    pub(crate) id_width: u8,
+    pub(crate) frequency_width: u8,
 }
 
 // sample rate for in-RAM lexicon table
@@ -70,6 +67,10 @@ impl<T: Write + ?Sized> WriteLe for T {}
 #[allow(dead_code)]
 pub(crate) trait ReadLe {
     fn slice(&self, offset: usize, len: usize) -> io::Result<&[u8]>;
+
+    fn read_u8(&self, offset: usize) -> io::Result<u8> {
+        Ok(self.slice(offset, 1)?[0])
+    }
 
     fn read_u16_le(&self, offset: usize) -> io::Result<u16> {
         Ok(u16::from_le_bytes(
@@ -111,14 +112,14 @@ pub(crate) fn invalid_err(message: &'static str) -> io::Error {
 // packed formate ==
 // 1 byte: bit width
 // N bytes: bit-packed values, low bits first
-pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32], capacity: usize) {
+pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32]) -> u8 {
     // write it pack it clear it call again and reuse it
     let width = values
         .iter()
         .copied()
         .max()
         .map_or(0, |value| (u32::BITS - value.leading_zeros()) as usize);
-    let packed_len = 1 + (capacity * width).div_ceil(8);
+    let packed_len = 1 + (values.len() * width).div_ceil(8);
     output.clear();
     output.reserve(packed_len);
     output.push(width as u8);
@@ -142,8 +143,5 @@ pub(crate) fn pack_into(output: &mut Vec<u8>, values: &[u32], capacity: usize) {
     if bit_count > 0 {
         output.push(bits as u8);
     }
-    //pad the packed bytes directly, leave the input buffers at their real count
-    if values.len() < capacity {
-        output.resize(packed_len, 0);
-    }
+    width as u8
 }
