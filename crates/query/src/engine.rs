@@ -96,6 +96,11 @@ impl SearchEngine {
         return self.snippet_gen.is_some();
     }
 
+    /// avoid passage reads for every candidate in a batch run.
+    pub fn disable_snippets(&mut self) {
+        self.snippet_gen = None;
+    }
+
     /// Tokenizes, executes DAAT search, and returns enriched top-k results
     ///
     /// Arguments:
