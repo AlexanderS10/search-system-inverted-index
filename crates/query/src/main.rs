@@ -1,8 +1,9 @@
 //! MS MARCO Interactive Search Engine
 //!
 //! Executable 3 for Assignment #2
-//! Supports both interactive terminal REPL and browser Web UI mode
+//! Supports batch TREC export, terminal REPL, and browser Web UI
 
+mod batch;
 mod bm25;
 mod doc_table;
 mod engine;
@@ -22,19 +23,19 @@ use std::sync::{Arc, Mutex};
 ///
 /// Behavior:
 ///     1. Initializes SearchEngine loading the index, doc table, and snippet generator
-///     2. If --web is passed, starts the Web UI server
-///     3. Otherwise, starts the interactive command-line REPL
+///     2. Dispatches to batch export, web UI, or interactive REPL
 fn main() -> io::Result<()> {
     println!("MS MARCO Search Engine (DAAT / BM25)");
 
     // Initialize core search engine
-    let engine = SearchEngine::open(
+    let mut engine = SearchEngine::open(
         "data/index",
         "data/index/collection_stats.json",
         "data/index/doc_table.tsv",
         "data/index/passage_offsets.bin",
         "data/raw/collection.tsv",
     )?;
+    if env::args().nth(1).as_deref() == Some("--batch") { return batch::run(&mut engine); }
 
     if engine.has_snippets() {
         println!(
