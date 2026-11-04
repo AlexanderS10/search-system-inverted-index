@@ -14,6 +14,7 @@ use std::io::{self, BufWriter, Error, Write};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::{collections::HashSet, env};
+use std::time::Instant;
 
 const USAGE: &str = "usage: --batch QUERIES QRELS OUTPUT K [or|and]";
 
@@ -29,6 +30,7 @@ pub fn run(engine: &mut SearchEngine) -> io::Result<()> {
         _ => return Err(Error::new(InvalidInput, USAGE)),
     };
     let k: NonZeroUsize = k.parse().map_err(|e| Error::new(InvalidInput, e))?;
+    let started = Instant::now();
 
     let qrel_text = fs::read_to_string(qrels)?;
     // use qrels as query filter not their labels
@@ -52,6 +54,7 @@ pub fn run(engine: &mut SearchEngine) -> io::Result<()> {
     // stage the file so a failed batch does not replace a good run.
     let temporary = output.with_extension("run.tmp");
     let mut writer = BufWriter::new(File::create(&temporary)?);
+    let mut query_count = 0;
 
     // no need to fetch passage text for every candidate.
     engine.disable_snippets();
@@ -63,6 +66,7 @@ pub fn run(engine: &mut SearchEngine) -> io::Result<()> {
         if !remaining.remove(qid) {
             continue;
         }
+        query_count += 1;
         // OR gives a wider pool; AND keeps passages with every query term.
         for item in engine.search(query, mode, k.get())?.results {
             let (pid, rank, score) = (item.external_id, item.rank, item.score);
@@ -81,6 +85,7 @@ pub fn run(engine: &mut SearchEngine) -> io::Result<()> {
     writer.flush()?;
     drop(writer);
     fs::rename(temporary, output)?;
+    println!("Exported {query_count} queries in {:.3} s", started.elapsed().as_secs_f64());
     println!("Wrote TREC run to {}", output.display());
     Ok(())
 }
